@@ -21,13 +21,18 @@ async function taskFromInput(root) {
   return markers[0].task;
 }
 
-const id = await taskFromInput(process.argv[2] ?? '/tmp/agent-runner-inputs');
-const pool = JSON.parse(process.env.SANITY_EVAL_DATASETS ?? '{}');
+const args = process.argv.slice(2);
+const checkOnly = args.includes('--check');
+const inputRoot = args.find(arg => arg !== '--check') ?? '/tmp/agent-runner-inputs';
+const id = await taskFromInput(inputRoot);
+assert.ok(process.env.SANITY_EVAL_DATASETS, 'Set SANITY_EVAL_DATASETS to the isolated dataset pool before launching.');
+const pool = JSON.parse(process.env.SANITY_EVAL_DATASETS);
 const perTask = Number(process.env.SANITY_EVAL_RUNS_PER_TASK ?? 4);
 const project = process.env.SANITY_PROJECT_ID;
 const token = process.env.SANITY_API_TOKEN;
 assert.ok(Number.isInteger(perTask) && perTask > 0, 'Invalid runs per task');
 assert.ok(Array.isArray(pool[id]) && pool[id].length >= perTask, `Configure ${perTask} isolated datasets for ${id} before launching`);
+assert.ok(token, 'Set SANITY_API_TOKEN to a credential scoped to the isolated test datasets.');
 
 const recovery = id === 'studio-recovery';
 const knownDatasets = new Set();
@@ -41,6 +46,11 @@ for (const [task, slots] of Object.entries(pool)) {
       knownDatasets.add(name);
     }
   }
+}
+
+if (checkOnly) {
+  console.log(`Sanity dataset settings are present for ${id}.`);
+  process.exit(0);
 }
 
 const lease = randomUUID();

@@ -11,3 +11,5 @@ Run `npm ci` and `npm run dev` for the storefront on port 3000. For Studio, run 
 ## Tracks runs
 
 Tracks prepares an isolated dataset and writes the task's local testing instructions to `.sanity-eval/contract.json`. Follow those notes to run the check for your task. Keep changes within the assigned sandbox dataset.
+
+The preview verifier uses Chromium already installed in the Tracks sandbox. To run that verifier outside Tracks, install your local Playwright browser with `npx playwright install chromium`.

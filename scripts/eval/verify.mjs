@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
+import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { client, concurrentCopy, content, contentQuery, legacyQuery, migratedQuery, settings, targets, titles, titleTestId } from './fixtures.mjs';
 
@@ -142,12 +144,21 @@ async function files(root) {
 }
 
 async function preview() {
-  const { chromium } = await import('playwright');
   const root = 'http://localhost:3000';
-  process.loadEnvFile('.env.local');
   const secret = process.env.SANITY_EVAL_PREVIEW_SECRET;
   assert.ok(secret);
-  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  const tracksBrowser = '/opt/tracks-browser';
+  const bundledPlaywright = path.join(tracksBrowser, 'node_modules/playwright-core');
+  let browser;
+  if (existsSync(bundledPlaywright)) {
+    // The Tracks image includes full Chromium, but omits the Playwright headless shell.
+    process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(tracksBrowser, 'browsers');
+    const { chromium } = createRequire(import.meta.url)(bundledPlaywright);
+    browser = await chromium.launch({ executablePath: chromium.executablePath(), args: ['--no-sandbox'] });
+  } else {
+    const { chromium } = await import('playwright');
+    browser = await chromium.launch({ args: ['--no-sandbox'] });
+  }
   const browserEvidence = [];
   const open = async context => {
     const page = await context.newPage();
