@@ -56,7 +56,9 @@ if (checkOnly) {
 const lease = randomUUID();
 async function reserve(config, role) {
   const api = client(config);
-  if ((await api.query('*[0...1]')).length) return false;
+  // Sanity creates access-control records even in a new dataset.
+  const occupied = '*[!(_type == "system.group" && _id in path("_.groups.**"))][0...1]';
+  if ((await api.query(occupied)).length) return false;
   try {
     await api.mutate([{ create: { _id: 'tracks-eval-lease', _type: 'tracksEvalLease', lease, role } }]);
     return true;
