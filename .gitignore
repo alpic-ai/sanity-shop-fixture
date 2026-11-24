@@ -1,0 +1,5 @@
+.env.local
+.sanity-eval/
+node_modules/
+.next/
+studio/.env.local
