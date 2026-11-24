@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { apiVersion, client, contentQuery, legacyQuery, reference, scenarios, settings, targets, titleTestId } from './fixtures.mjs';
+import { apiVersion, client, fixtureContentQuery, fixtureFilter, fixtureId, legacyQuery, outsideFixtureQuery, reference, scenarios, settings, targets, titleTestId } from './fixtures.mjs';
 
 const markerName = 'fieldwork-task.json';
 async function taskFromInput(root) {
@@ -35,15 +35,22 @@ assert.ok(Array.isArray(pool[id]) && pool[id].length >= perTask, `Configure ${pe
 assert.ok(token, 'Set SANITY_API_TOKEN to a credential scoped to the isolated test datasets.');
 
 const recovery = id === 'studio-recovery';
-const knownDatasets = new Set();
+const knownDatasets = new Map();
 for (const [task, slots] of Object.entries(pool)) {
   assert.ok(Object.hasOwn(scenarios, task) && Array.isArray(slots), 'Invalid dataset assignment');
-  for (const { dataset, reference } of slots) {
+  for (const { dataset, reference, namespace } of slots) {
     settings({ SANITY_EVAL_PROJECT: project, SANITY_EVAL_TOKEN: token, SANITY_EVAL_DATASET: dataset, SANITY_EVAL_REFERENCE_DATASET: reference });
     assert.equal(Boolean(reference), task === 'studio-recovery', 'Studio recovery requires a separate reference dataset');
+    if (namespace !== undefined) {
+      assert.equal(task, 'seo-draft-backfill', 'Shared datasets are only supported for SEO backfills');
+      assert.ok(namespace.length <= 44);
+      fixtureFilter(namespace);
+    }
     for (const name of [dataset, reference].filter(Boolean)) {
-      assert.ok(name.length <= 64 && !knownDatasets.has(name), 'Dataset assignments must be unique');
-      knownDatasets.add(name);
+      const assignedNamespaces = knownDatasets.get(name) ?? [];
+      assert.ok(name.length <= 64, 'Dataset name is too long');
+      assert.ok(assignedNamespaces.every(previous => previous && namespace && previous !== namespace), 'Dataset or namespace is already assigned');
+      knownDatasets.set(name, [...assignedNamespaces, namespace]);
     }
   }
 }
@@ -57,10 +64,10 @@ const lease = randomUUID();
 async function reserve(config, role) {
   const api = client(config);
   // New datasets already contain records in Sanity’s reserved system namespace.
-  const occupied = '*[!(_id in path("_.**"))][0...1]';
+  const occupied = config.namespace ? `*[${fixtureFilter(config.namespace)}][0...1]` : '*[!(_id in path("_.**"))][0...1]';
   if ((await api.query(occupied)).length) return false;
   try {
-    await api.mutate([{ create: { _id: 'tracks-eval-lease', _type: 'tracksEvalLease', lease, role } }]);
+    await api.mutate([{ create: { _id: fixtureId(config.namespace, 'tracks-eval-lease'), _type: 'tracksEvalLease', lease, role } }]);
     return true;
   } catch (error) {
     if (error.status === 409) return false;
@@ -69,8 +76,8 @@ async function reserve(config, role) {
 }
 
 async function allocate() {
-  for (const { dataset, reference: other } of pool[id]) {
-    const config = { project, token, dataset, other };
+  for (const { dataset, reference: other, namespace } of pool[id]) {
+    const config = { project, token, dataset, other, namespace };
     if (!await reserve(config, 'target')) continue;
     if (other && !await reserve({ ...config, dataset: other }, 'reference')) continue;
     return config;
@@ -81,10 +88,10 @@ async function allocate() {
 const config = await allocate();
 const api = client(config);
 const other = config.other ? client(config, config.other) : undefined;
-await api.mutate(scenarios[id].map(create => ({ create })));
+await api.mutate(scenarios[id].map(doc => ({ create: { ...doc, _id: fixtureId(config.namespace, doc._id) } })));
 if (other) await other.mutate(reference.map(create => ({ create })));
 
-const featured = { 'catalog-migration': 'jacket-en', 'live-draft-preview': 'preview-product', 'seo-draft-backfill': 'target-one', 'studio-recovery': 'recovery-product' }[id];
+const featured = fixtureId(config.namespace, { 'catalog-migration': 'jacket-en', 'live-draft-preview': 'preview-product', 'seo-draft-backfill': 'target-one', 'studio-recovery': 'recovery-product' }[id]);
 const options = {
   'catalog-migration': {
     commands: ['node migrate.mjs', 'node rollback.mjs'],
@@ -117,6 +124,7 @@ await mkdir('.sanity-eval', { mode: 0o700 });
 const configured = [
   `SANITY_EVAL_PROJECT=${project}`, `SANITY_EVAL_DATASET=${config.dataset}`,
   `SANITY_EVAL_REFERENCE_DATASET=${config.other ?? ''}`,
+  `SANITY_EVAL_NAMESPACE=${config.namespace ?? ''}`,
   `SANITY_PROJECT_ID=${project}`, `SANITY_DATASET=${config.dataset}`,
   `SANITY_FEATURED_PRODUCT=${featured}`,
   `SANITY_STUDIO_PROJECT_ID=${project}`, `SANITY_STUDIO_DATASET=${config.dataset}`,
@@ -134,11 +142,14 @@ await put('studio/.env.local', configured.filter(row => row.startsWith('SANITY_S
 await json('.sanity-eval/contract.json', {
   task: id, project, dataset: config.dataset, apiVersion, ...options[id],
   verification: 'npm run eval:verify',
-  scope: 'Use only the assigned target dataset. The reference dataset, when present, is read-only after setup.',
+  scope: config.namespace
+    ? 'The dataset is shared. Only read or change the assigned product IDs in the targets file and their drafts. Preserve all other documents.'
+    : 'Use only the assigned target dataset. The reference dataset, when present, is read-only after setup.',
 });
-if (id === 'seo-draft-backfill') await json('.sanity-eval/targets.json', targets);
+if (id === 'seo-draft-backfill') await json('.sanity-eval/targets.json', targets.map(target => fixtureId(config.namespace, target)));
 await json('.sanity-eval/before.json', {
-  target: await api.query(contentQuery),
+  target: await api.query(fixtureContentQuery(config.namespace)),
+  ...(config.namespace ? { outside: await api.query(outsideFixtureQuery(config.namespace)) } : {}),
   ...(id === 'catalog-migration' ? { legacy: await api.query(legacyQuery, 'published') } : {}),
   ...(other ? { reference: await other.query('* | order(_id asc)') } : {}),
 });

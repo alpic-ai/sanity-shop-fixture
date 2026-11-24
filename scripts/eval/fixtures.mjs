@@ -70,3 +70,24 @@ export const contentQuery = '*[_type == "product" || _type == "sharedSpec"] | or
 export function content(docs) {
   return docs.map(({ _rev, _createdAt, _updatedAt, ...doc }) => doc);
 }
+
+export function fixtureId(namespace, id) {
+  if (!namespace) return id;
+  return id.startsWith('drafts.')
+    ? `drafts.${namespace}--${id.slice('drafts.'.length)}`
+    : `${namespace}--${id}`;
+}
+
+export function fixtureFilter(namespace) {
+  if (!namespace) return 'true';
+  if (!/^seo-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(namespace)) throw Error('Invalid SEO fixture namespace');
+  return `(string::startsWith(_id, "${namespace}--") || string::startsWith(_id, "drafts.${namespace}--"))`;
+}
+
+export function fixtureContentQuery(namespace) {
+  return namespace ? contentQuery.replace('*[', `*[${fixtureFilter(namespace)} && (`).replace('] |', ')] |') : contentQuery;
+}
+
+export function outsideFixtureQuery(namespace) {
+  return `*[!(_id in path("_.**")) && !${fixtureFilter(namespace)}] | order(_id asc){_id,_rev}`;
+}

@@ -5,14 +5,17 @@ import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { client, concurrentCopy, content, contentQuery, legacyQuery, migratedQuery, settings, targets, titles, titleTestId } from './fixtures.mjs';
+import { client, concurrentCopy, content, fixtureContentQuery, fixtureId, legacyQuery, migratedQuery, outsideFixtureQuery, settings, titles, titleTestId } from './fixtures.mjs';
 
 const id = process.argv[2];
 process.loadEnvFile('.env.local');
 const config = settings();
 const api = client(config);
 const before = JSON.parse(await readFile('.sanity-eval/before.json', 'utf8'));
-const docs = () => api.query(contentQuery);
+const namespace = process.env.SANITY_EVAL_NAMESPACE;
+const docs = () => api.query(fixtureContentQuery(namespace));
+const product = key => fixtureId(namespace, key);
+const draft = key => fixtureId(namespace, `drafts.${key}`);
 const byId = (rows) => Object.fromEntries(rows.map(row => [row._id, row]));
 const without = (row, ...keys) => Object.fromEntries(Object.entries(row).filter(([key]) => !keys.includes(key)));
 const run = (file, args = []) => {
@@ -76,10 +79,10 @@ async function interruptedBackfill() {
       for await (const line of createInterface({ input: child.stdout })) {
         if (line === 'READY_AFTER_READ' && !sawRead) {
           sawRead = true;
-          const base = byId(content(before.target))['target-three'];
+          const base = byId(content(before.target))[product('target-three')];
           await api.mutate([
-            { createIfNotExists: { ...base, _id: 'drafts.target-three' } },
-            { patch: { id: 'drafts.target-three', set: { 'seo': { metaDescription: concurrentCopy }, editorNote: 'Concurrent editor note' } } },
+            { createIfNotExists: { ...base, _id: draft('target-three') } },
+            { patch: { id: draft('target-three'), set: { 'seo': { metaDescription: concurrentCopy }, editorNote: 'Concurrent editor note' } } },
           ]);
           child.stdin.write('CONTINUE\n');
         } else if (line === 'WROTE_DRAFT' && sawRead) {
@@ -102,7 +105,7 @@ async function backfill() {
   await interruptedBackfill();
   const changed = byId(await docs());
   const eligible = ['target-one', 'target-two', 'target-four'];
-  const description = (rows, key) => rows[`drafts.${key}`]?.seo?.metaDescription;
+  const description = (rows, key) => rows[draft(key)]?.seo?.metaDescription;
   const partial = eligible.filter(key => description(changed, key));
   run('backfill.mjs', ['--targets', '.sanity-eval/targets.json']);
   const complete = await docs();
@@ -113,20 +116,21 @@ async function backfill() {
     for (const key of eligible) {
       const value = description(after, key);
       assert.ok(typeof value === 'string' && value.trim() && [...value].length <= 155);
-      const draftId = `drafts.${key}`;
-      const base = original[draftId] ?? original[key];
+      const draftId = draft(key);
+      const base = original[draftId] ?? original[product(key)];
       expected[draftId] = { ...base, _id: draftId, seo: { ...base.seo, metaDescription: value } };
     }
-    expected['drafts.target-three'] = { ...original['target-three'], _id: 'drafts.target-three', editorNote: 'Concurrent editor note', seo: { metaDescription: concurrentCopy } };
+    expected[draft('target-three')] = { ...original[product('target-three')], _id: draft('target-three'), editorNote: 'Concurrent editor note', seo: { metaDescription: concurrentCopy } };
     assert.deepEqual(byId(content(complete)), expected);
   });
-  await check('seo-published-unchanged', () => {
+  await check('seo-published-unchanged', async () => {
     const published = rows => rows.filter(row => !row._id.startsWith('drafts.'));
     assert.deepEqual(published(complete), published(before.target));
+    if (namespace) assert.deepEqual(await api.query(outsideFixtureQuery(namespace)), before.outside);
   });
   await check('seo-concurrent-edit', () => {
     assert.equal(description(after, 'target-three'), concurrentCopy);
-    assert.equal(after['drafts.target-three'].editorNote, 'Concurrent editor note');
+    assert.equal(after[draft('target-three')].editorNote, 'Concurrent editor note');
   });
   await check('seo-retry', async () => {
     assert.equal(partial.length, 1);
