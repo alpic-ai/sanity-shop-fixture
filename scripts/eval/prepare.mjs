@@ -25,9 +25,13 @@ const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
 const inputRoot = args.find(arg => arg !== '--check') ?? '/tmp/agent-runner-inputs';
 const id = await taskFromInput(inputRoot);
-assert.ok(process.env.SANITY_EVAL_DATASETS, 'Set SANITY_EVAL_DATASETS to the isolated dataset pool before launching.');
-const pool = JSON.parse(process.env.SANITY_EVAL_DATASETS);
-const perTask = Number(process.env.SANITY_EVAL_RUNS_PER_TASK ?? 4);
+const seoDataset = process.env.SANITY_EVAL_SEO_DATASET;
+if (seoDataset) assert.equal(id, 'seo-draft-backfill', 'SANITY_EVAL_SEO_DATASET is only for SEO runs.');
+assert.ok(seoDataset || process.env.SANITY_EVAL_DATASETS, 'Set SANITY_EVAL_DATASETS to the isolated dataset pool before launching.');
+const pool = seoDataset
+  ? { [id]: [{ dataset: seoDataset, namespace: `seo-${randomUUID()}` }] }
+  : JSON.parse(process.env.SANITY_EVAL_DATASETS);
+const perTask = seoDataset ? 1 : Number(process.env.SANITY_EVAL_RUNS_PER_TASK ?? 4);
 const project = process.env.SANITY_PROJECT_ID;
 const token = process.env.SANITY_API_TOKEN;
 assert.ok(Number.isInteger(perTask) && perTask > 0, 'Invalid runs per task');
